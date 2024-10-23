@@ -1,5 +1,7 @@
 import unittest
 import unittest.mock as mock
+from copy import deepcopy
+from distutils.command.config import config
 
 import sync2jira.intermediary as i
 
@@ -10,6 +12,7 @@ class TestIntermediary(unittest.TestCase):
     """
     This class tests the downstream_issue.py file under sync2jira
     """
+
     def setUp(self):
         self.mock_config = {
             'sync2jira': {
@@ -237,3 +240,115 @@ class TestIntermediary(unittest.TestCase):
         assert expected == actual
 
     # TODO: Add new tests from PR
+
+    def test_from_gh_project(self):
+        # Items tested:
+        # - zero, one, and two assignees
+        # - zero, one, and two labels
+        # - zero, one, and two comments
+        # - comment body present and missing
+        # - IssueState capitalization and trimming
+        # - story points missing, in first position, in second position
+        # - fixVersion mapping present and missing
+        # - milestone present and missing
+
+        mock_config = deepcopy(self.mock_config)
+        upstream = 'mock_org/mock_repo'
+        mock_config['sync2jira']['map']['github'][upstream] = {
+            'mapping': [{'fixVersion': "mock_XXX"}]}
+        gh_issue = {
+            'title': 'mock_title',
+            'url': 'mock_url',
+            'body': 'mock_body',
+            'author': {'name': 'mock_author'},
+            'IssueState': ' CLOSED ',
+            'id': 'mock_id',
+            'number': 'mock_number',
+            'comments': {'nodes': []},
+            'labels': {'nodes': []},
+            'assignees': {'nodes': []},
+            'projectItems': {'nodes': []},
+            'milestone': 'mock_milestone',  # Optional?
+        }
+        field_value_nodes = [
+            {
+                'field': {'name': 'Sprint'},
+                'duration': 21,
+                'startDate': '2024-09-18',
+                'title': 'Sprint 3263'
+            },
+            {
+                'field': {'name': 'Story Points'},
+                'number': '34'
+            }
+        ]
+        assignees = [
+            {'name': 'mock_assignee_name_1', 'login': 'mock_assignee_login_1'},
+            {'name': 'mock_assignee_name_2', 'login': 'mock_assignee_login_2'}
+        ]
+        labels = [{'name': 'mock_label_1'}, {'name': 'mock_label_2'}]
+        comments = [
+            {
+                'author': {
+                    'name': 'mock_comment_author_name_1',
+                    'login': 'mock_comment_author_login_1',
+                },
+                'body': None,
+                'id': 'mock_comment_id_1',
+                'createdAt': 'mock_comment_created_at_1',
+                'updatedAt': 'mock_comment_updated_at_1',
+            },
+            {
+                'author': {
+                    'name': 'mock_comment_author_name_2',
+                    'login': 'mock_comment_author_login_2',
+                },
+                'body': 'mock_comment_body_2',
+                'id': 'mock_comment_id_2',
+                'createdAt': 'mock_comment_created_at_2',
+                'updatedAt': 'mock_comment_updated_at_2',
+            }
+        ]
+
+        c = 2
+        self.assertEqual(c, len(assignees))
+        self.assertEqual(c, len(labels))
+        self.assertEqual(c, len(comments))
+        self.assertEqual(c, len(field_value_nodes))
+        # The first iteration will use the full lists; each subsequent
+        # iteration will use a list with one fewer items; the last iteration
+        # will use empty lists.  Each time we use the last part of the list,
+        # so that the first element of the slice is different each time.
+        for idx in range(c + 1):
+            gh_issue['assignees']['nodes'] = assignees[idx:]
+            gh_issue['labels']['nodes'] = labels[idx:]
+            gh_issue['comments']['nodes'] = comments[idx:]
+            gh_issue['projectItems']['nodes'] = [
+                {'fieldValues': {'nodes': field_value_nodes[idx:]}}]
+            gh_issue['milestone'] = 'mock_milestone' if c - idx > 0 else None
+            i_issue = i.Issue.from_gh_project(gh_issue, upstream, mock_config)
+            self.assertEqual('[mock_org/mock_repo] mock_title', i_issue.title)
+            self.assertEqual(upstream, i_issue.upstream)
+            self.assertEqual(mock_config['sync2jira']['map']['github'][upstream], i_issue.downstream)
+            self.assertEqual('mock_body', i_issue.content)
+            self.assertEqual({'fullname': 'mock_author'}, i_issue.reporter)
+            self.assertEqual('Closed', i_issue.status)
+
+            self.assertEqual(c - idx, len(i_issue.comments))
+            self.assertEqual(c - idx, len(i_issue.tags))
+            self.assertEqual(c - idx, len(i_issue.assignee))
+
+            if c - idx > 0:
+                self.assertEqual('mock_comment_author_name_2', i_issue.comments[-1]['author'])
+                self.assertEqual('mock_comment_author_login_2', i_issue.comments[-1]['name'])
+                self.assertEqual('mock_comment_body_2', i_issue.comments[-1]['body'])
+                self.assertEqual('mock_assignee_name_2', i_issue.assignee[-1])
+                self.assertEqual('mock_label_2', i_issue.tags[-1])
+                self.assertEqual('34', i_issue.storypoints)
+                self.assertEqual(['mock_mock_milestone'], i_issue.fixVersion)
+            else:
+                self.assertEqual(None, i_issue.storypoints)
+                self.assertEqual(None, i_issue.fixVersion)
+
+            if idx == 0:
+                self.assertEqual('', i_issue.comments[0]['body'])
