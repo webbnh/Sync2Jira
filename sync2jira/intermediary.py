@@ -112,6 +112,55 @@ class Issue(object):
             upstream_id=issue['number']
         )
 
+    @classmethod
+    def from_gh_project(cls, issue, upstream, config):
+        """Helper function to create an intermediary object from a GitHub
+        project V2 issue.
+        """
+        kwargs = {
+            'source': 'github',  # FIXME:  Should this be 'github_project' or equiv?
+            'title': issue['title'],
+            'url': issue['url'],
+            'upstream': upstream,
+            'config': config,
+            'content': issue['body'] or '',  # FIXME:  Should this be HTML, MD, or text?
+            'reporter': {'fullname': issue['author']['name']},
+            'status': issue.get('IssueState', '').strip().capitalize(),  # FIXME:  omit if blank?
+            'id': issue['id'],
+            'upstream_id': issue['number'],
+            'priority': None,  # TODO: Priority is broken
+            'comments': [{
+                'author': comment['author']['name'],
+                'name': comment['author']['login'],
+                'body': trim_string(comment['body']) if comment['body'] else '',
+                'id': comment['id'],
+                'date_created': comment['createdAt'],
+                'changed': comment['updatedAt']  # FIXME:  This was "None".
+            } for comment in issue['comments']['nodes']],
+            'tags': [node['name'] for node in issue['labels']['nodes']],
+            'assignee': [node['name'] for node in issue['assignees']['nodes']],  # FIXME:  Is a list OK here & do we want login instead?
+        }
+
+        for node in issue['projectItems']['nodes'][0]['fieldValues']['nodes']:
+            if node['field']['name'] == 'Story Points':
+                kwargs['storypoints'] = str(node['number'])  # FIXME:  should this be str or int?
+                break
+        else:
+            kwargs['storypoints'] = None
+
+        # Perform any mapping
+        mapping = config['sync2jira']['map']['github'][upstream].get('mapping', [])
+
+        # Check for fixVersion
+        if any('fixVersion' in item for item in mapping):
+            map_fixVersion(mapping, issue)
+        if issue['milestone']:
+            kwargs['fixVersion'] = [issue['milestone']]
+        else:
+            kwargs['fixVersion'] = None
+
+        return cls(**kwargs)
+
     def __repr__(self):
         return f"<Issue {self.url} >"
 

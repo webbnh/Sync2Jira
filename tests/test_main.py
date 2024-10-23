@@ -1,6 +1,7 @@
 import unittest
 import unittest.mock as mock
 from unittest.mock import MagicMock
+from copy import deepcopy
 
 import sync2jira.main as m
 
@@ -298,6 +299,80 @@ class TestMain(unittest.TestCase):
         mock_sleep.assert_not_called()
         mock_report_failure.assert_called_with(self.mock_config)
 
+    @mock.patch(PATH + 'query_ghp')
+    @mock.patch(PATH + 'u_issue')
+    @mock.patch(PATH + 'd_issue')
+    def test_initialize_github_project(self, mock_d, mock_u, mock_query_ghp):
+        config = deepcopy(self.mock_config)
+        timestamp = "2024-10-07T15:40:00Z"
+        issues = [
+            {
+                'repository': {'nameWithOwner': "mock_repo1"},
+                'number': 17
+            },
+            {
+                'repository': {'nameWithOwner': "mock_repo1"},
+                'number': 18
+            },
+            {
+                'repository': {'nameWithOwner': "mock_repo2"},
+                'number': 20
+            }
+        ]
+        mock_u.handle_gh_project_message.return_value = "mock_issue"
+
+        # No project configuration
+        mapping = config['sync2jira']['map']
+        if 'github_projects' in mapping:
+            del mapping['github_projects']
+        mock_query_ghp.reset_mock()
+        m.initialize_github_project(timestamp, config)
+        mock_query_ghp.assert_not_called()
+        mock_u.handle_gh_project_message.assert_not_called()
+        mock_d.sync_with_jira.assert_not_called()
+
+        # No configured projects
+        mapping['github_projects'] = []
+        mock_query_ghp.reset_mock()
+        m.initialize_github_project(timestamp, config)
+        mock_query_ghp.assert_not_called()
+        mock_u.handle_gh_project_message.assert_not_called()
+        mock_d.sync_with_jira.assert_not_called()
+
+        # One configured project containing one issue
+        mapping['github_projects'] = ["mock_project1"]
+        mock_query_ghp.reset_mock()
+        mock_query_ghp.side_effect = ((i for i in (issues[1],)),)
+        m.initialize_github_project(timestamp, config)
+        mock_query_ghp.assert_called_once_with('mock_project1', timestamp)
+        mock_u.handle_gh_project_message.assert_called_with(issues[1], config)
+        mock_d.sync_with_jira.assert_called_with(
+            mock_u.handle_gh_project_message.return_value, config)
+
+        # Three configured projects, the first with two issues, the second with
+        # one, the third with none.
+        mapping['github_projects'] = [
+            "mock_project1", "mock_project2", "mock_project3"]
+        mock_query_ghp.reset_mock()
+        mock_u.reset_mock()
+        mock_d.reset_mock()
+        mock_query_ghp.side_effect = (
+            (i for i in (issues[2], issues[1])),
+            (i for i in (issues[0],)),
+            (i for i in ()))
+        m.initialize_github_project(timestamp, config)
+        mock_query_ghp.assert_has_calls([
+            mock.call('mock_project1', timestamp),
+            mock.call('mock_project2', timestamp)])
+        mock_u.handle_gh_project_message.assert_has_calls((
+            mock.call(issues[2], config),
+            mock.call(issues[1], config),
+            mock.call(issues[0], config)))
+        mock_d.sync_with_jira.assert_has_calls((
+            mock.call(mock_u.handle_gh_project_message.return_value, config),
+            mock.call(mock_u.handle_gh_project_message.return_value, config),
+            mock.call(mock_u.handle_gh_project_message.return_value, config)))
+
     @mock.patch(PATH + 'handle_msg')
     @mock.patch(PATH + 'fedmsg')
     def test_listen_no_handlers(self,
@@ -480,12 +555,243 @@ class TestMain(unittest.TestCase):
         # Assert everything was called correctly
         mock_handle_msg.assert_not_called()
 
+    @mock.patch(PATH + 'verify_content_lists')
+    @mock.patch(PATH + 'sanity_check_dates')
+    @mock.patch(PATH + 'requests')
+    def test_query_ghp(self, mock_requests, mock_scd, mock_vcl):
+        project_id = "mock_project_id"
+        timestamp = "2024-10-07T15:40:00Z"
+        pages = (
+            {
+                "data": {
+                    "node": {
+                        "items": {
+                            "totalCount": 370,
+                            "nodes": [
+                                {
+                                    "content": {}
+                                },
+                                {
+                                    "content": {
+                                        "updatedAt": "2024-10-09T14:24:29Z",
+                                        "comments": {
+                                            "totalCount": 1,
+                                            "nodes": [{}]
+                                        },
+                                        "projectItems": {
+                                            "totalCount": 2,
+                                            "nodes": [
+                                                {
+                                                    "updatedAt": "2024-10-09T14:24:33Z",
+                                                    "fieldValues": {
+                                                        "totalCount": 7,
+                                                        "nodes": [{}, {}, {}, {}, {}, {}, {}]
+                                                    },
+                                                    "project": {
+                                                        "number": 5,
+                                                        "id": project_id
+                                                    }
+                                                },
+                                                {
+                                                    "updatedAt": "2024-10-09T14:24:33Z",
+                                                    "fieldValues": {
+                                                        "totalCount": 5,
+                                                        "nodes": [{}, {}, {}, {}, {}]
+                                                    },
+                                                    "project": {
+                                                        "number": 9,
+                                                        "id": project_id + '-wrong',
+                                                    }
+                                                }
+                                            ]
+                                        },
+                                        "labels": {
+                                            "totalCount": 1,
+                                            "nodes": [
+                                                {}
+                                            ]
+                                        },
+                                        "closedByPullRequestsReferences": {
+                                            "totalCount": 0,
+                                            "nodes": []
+                                        }
+                                    }
+                                },
+                                {
+                                    "content": {
+                                        "updatedAt": "2024-05-27T02:21:26Z",
+                                        "comments": {
+                                            "totalCount": 2,
+                                            "nodes": [{}, {}]
+                                        },
+                                        "projectItems": {
+                                            "totalCount": 0,
+                                            "nodes": []
+                                        },
+                                        "labels": {
+                                            "totalCount": 1,
+                                            "nodes": [{}]
+                                        },
+                                        "closedByPullRequestsReferences": {
+                                            "totalCount": 0,
+                                            "nodes": []
+                                        }
+                                    }
+                                },
+                                {
+                                    "content": {}
+                                },
+                            ],
+                            "pageInfo": {
+                                "endCursor": "MTAw",
+                                "hasNextPage": True
+                            }
+                        }
+                    },
+                }
+            },
+            {
+                "data": {
+                    "node": {
+                        "items": {
+                            "totalCount": 370,
+                            "nodes": [],
+                            "pageInfo": {
+                                "endCursor": "MqAw",
+                                "hasNextPage": True
+                            }
+                        }
+                    },
+                }
+            },
+            {
+                "data": {
+                    "node": {
+                        "items": {
+                            "totalCount": 370,
+                            "nodes": [
+                                {
+                                    "content": {}
+                                },
+                                {
+                                    "content": {}
+                                },
+                            ],
+                            "pageInfo": {
+                                "endCursor": "MzAw",
+                                "hasNextPage": True
+                            }
+                        }
+                    },
+                }
+            },
+            {
+                "data": {
+                    "node": {
+                        "items": {
+                            "totalCount": 370,
+                            "nodes": [
+                                {
+                                    "content": {
+                                        "updatedAt": "2024-10-09T14:24:29Z",
+                                        "comments": {
+                                            "totalCount": 1,
+                                            "nodes": [{}]
+                                        },
+                                        "projectItems": {
+                                            "totalCount": 2,
+                                            "nodes": [
+                                                {
+                                                    "updatedAt": "2024-10-09T14:24:33Z",
+                                                    "fieldValues": {
+                                                        "totalCount": 7,
+                                                        "nodes": [{}, {}, {}, {}, {}, {}, {}]
+                                                    },
+                                                    "project": {
+                                                        "number": 5,
+                                                        "id": project_id,
+                                                    }
+                                                },
+                                                {
+                                                    "updatedAt": "2024-10-09T14:24:33Z",
+                                                    "fieldValues": {
+                                                        "totalCount": 5,
+                                                        "nodes": [{}, {}, {}, {}, {}]
+                                                    },
+                                                    "project": {
+                                                        "number": 9,
+                                                        "id": project_id + '-wrong',
+                                                    }
+                                                }
+                                            ]
+                                        },
+                                        "labels": {
+                                            "totalCount": 1,
+                                            "nodes": [
+                                                {}
+                                            ]
+                                        },
+                                        "closedByPullRequestsReferences": {
+                                            "totalCount": 0,
+                                            "nodes": []
+                                        }
+                                    }
+                                },
+                             ],
+                            "pageInfo": {
+                                "endCursor": "Mzcw",
+                                "hasNextPage": False
+                            }
+                        }
+                    }
+                }
+            }
+        )
+        mock_response = MagicMock()
+        mock_requests.post.return_value = mock_response
+
+        # Test the request setup and error path
+        mock_response.status_code = 418
+        results = list(m.query_ghp(project_id, timestamp))
+        mock_requests.post.assert_called_once()
+        self.assertIn(project_id, mock_requests.post.call_args.kwargs['data'])
+        self.assertIn('"CURSOR": ""', mock_requests.post.call_args.kwargs['data'])
+        self.assertEqual(mock_requests.post.call_args.kwargs['headers']['Authorization'],
+                         'Bearer ' + m.GITHUB_TOKEN)
+        mock_response.json.assert_not_called()
+        self.assertEqual(results, [])
+
+        # Test when the response is a single page
+        mock_requests.reset_mock()
+        mock_response.reset_mock()
+        mock_response.status_code = 200
+        mock_response.json.side_effect = (pages[-1],)
+        results = list(m.query_ghp(project_id, timestamp))
+        mock_requests.post.assert_called_once()  # TODO:  Check the next page and cursor values.
+        mock_response.json.assert_called_once()
+        expected = [node['content'] for node in pages[-1]['data']['node']['items']['nodes'] if node['content']]
+        self.assertEqual(results, expected)
+
+        # Test when the response is multiple pages; also check that "old" items
+        # are filtered out and backlinks from other projects are removed.
+        mock_requests.reset_mock()
+        mock_response.reset_mock()
+        mock_response.status_code = 200
+        mock_response.json.side_effect = pages
+        results = list(m.query_ghp(project_id, timestamp))
+        self.assertEqual(mock_requests.post.call_count, len(pages))  # TODO:  Check the next page and cursor values.
+        self.assertEqual(mock_response.json.call_count, len(pages))
+        expected = [n['content'] for p in pages for n in p['data']['node']['items']['nodes']
+                    if n['content'] and n['content']['updatedAt'] >= timestamp]
+        self.assertEqual(results, expected)
+        for result in results:
+            project_items = result['projectItems']['nodes']
+            self.assertEqual(len(project_items), 1)
+            self.assertEqual(project_items[0]['project']['id'], project_id)
+
     @mock.patch(PATH + 'get')
-    def test_query(self,
-                   mock_get):
-        """
-        Tests 'query' function
-        """
+    def test_query(self, mock_get):
+        """Tests 'query' function"""
         # Set up return values
         mock_get.return_value = {
             'raw_messages': ['test_msg'],
