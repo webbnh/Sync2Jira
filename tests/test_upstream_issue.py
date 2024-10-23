@@ -1,5 +1,6 @@
 import unittest
 import unittest.mock as mock
+from copy import deepcopy
 from unittest.mock import MagicMock
 from copy import deepcopy
 
@@ -596,6 +597,114 @@ class TestUpstreamIssue(unittest.TestCase):
         self.mock_github_repo.get_issue.assert_called_with(number='mock_number')
         self.mock_github_issue.get_comments.assert_any_call()
         self.mock_github_client.get_user.assert_called_with('mock_login')
+
+    @mock.patch('sync2jira.intermediary.Issue.from_gh_project')
+    def test_handle_gh_project_message_label_filters(self, mock_from_gh_project):
+        # Cases:
+        # - card filters
+        #   - zero nodes, one, two
+        # - config filters
+        #   - zero, mismatch, partial match, full match
+
+        config = deepcopy(self.mock_config)
+        mock_from_gh_project.return_value = "Successful Call!"
+        card = {'repository': {'nameWithOwner': 'org/repo'}, 'number': 17, 'labels': {}}
+        card_labels = ('label_1', 'label_2')
+        config_filters = (
+            [],
+            ['nomatch', 'label_1'],
+            ['label_1', 'label_2'],
+            ['nomatch_1','nomatch_2']
+        )
+
+        for label_count in range(len(card_labels) + 1):
+            card['labels']['nodes'] = [{'name': l} for l in card_labels[:label_count]]
+
+            for cf in config_filters:
+                config['sync2jira']['filters']['github']['org/repo'] = { 'labels': cf }
+
+                response = u.handle_gh_project_message(card, config)
+                if set(card_labels[:label_count]).isdisjoint(cf):
+                    self.assertEqual(None, response)
+                else:
+                    self.assertEqual('Successful Call!', response)
+                    mock_from_gh_project.assert_called_with(card, 'org/repo', config)
+
+                mock_from_gh_project.reset_mock()
+
+    @mock.patch('sync2jira.intermediary.Issue.from_gh_project')
+    def test_handle_gh_project_message_milestone_filters(self, mock_from_gh_project):
+        # Cases:
+        # - card filters
+        #   - no milestone
+        #   - non-matching milestone
+        #   - matching milestone
+        # - config filters
+        #   - no milestone filter
+        #   - numeric value
+        #   - string value
+
+        config = deepcopy(self.mock_config)
+        mock_from_gh_project.return_value = "Successful Call!"
+        card = {'repository': {'nameWithOwner': 'org/repo'}, 'number': 17}
+        card_milestone = (None, {"number": 15}, {"number": 32})
+        config_filters = (None, 32, '32')
+        config['sync2jira']['filters']['github']['org/repo']['milestone'] = []  # TODO:  need 0, 1, 2 and missing cases; need mismatch entries
+
+        for milestone in card_milestone:
+            card['milestone'] = milestone
+
+            for cf in config_filters:
+                config['sync2jira']['filters']['github']['org/repo'] = { 'milestone': cf } if cf else {}
+
+                response = u.handle_gh_project_message(card, config)
+
+                ms_num = milestone['number'] if milestone else None
+                if cf is None or str(ms_num) == str(cf):
+                    self.assertEqual('Successful Call!', response)
+                    mock_from_gh_project.assert_called_with(card, 'org/repo', config)
+                else:
+                    self.assertEqual(None, response)
+
+                mock_from_gh_project.reset_mock()
+
+    @mock.patch('sync2jira.intermediary.Issue.from_gh_project')
+    def test_handle_gh_project_message_other_filters(self, mock_from_gh_project):
+        # Cases:
+        # - other filter ('status', 'tags')
+        #   - match, no match.
+
+        config = deepcopy(self.mock_config)
+        mock_from_gh_project.return_value = "Successful Call!"
+        extra_card_fields = (
+            {},
+            {'tag': 'tag'},
+            {'IssueState': 'closed'},
+            {'tag': 'wrong-tag'},
+            {'IssueState': 'not-closed'},
+            {'tag': 'tag', 'IssueState': 'closed'},
+            {'tag': 'wrong-tag', 'IssueState': 'closed'},
+            {'tag': 'tag', 'IssueState': 'not-closed'},
+            {'tag': 'wrong-tag', 'IssueState': 'not-closed'}
+        )
+        config_filters = ({}, {'tag': 'tag'}, {'IssueState': 'closed'}, {'tag': 'tag', 'IssueState': 'closed'})
+
+        for extras in extra_card_fields:
+            card = {'repository': {'nameWithOwner': 'org/repo'}, 'number': 17}
+            card.update(extras)
+
+            for cf in config_filters:
+                config['sync2jira']['filters']['github']['org/repo'] = cf
+
+                response = u.handle_gh_project_message(card, config)
+
+                if not cf or (extras and all(str(card.get(field)) == str(value) for field, value in cf.items())):
+                    self.assertEqual('Successful Call!', response)
+                    mock_from_gh_project.assert_called_with(card, 'org/repo', config)
+                else:
+                    self.assertEqual(None, response)
+
+                mock_from_gh_project.reset_mock()
 
     @mock.patch(PATH + 'api_call_get')
     @mock.patch(PATH + '_github_link_field_to_dict')
