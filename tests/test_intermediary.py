@@ -194,3 +194,15 @@ class TestIntermediary(unittest.TestCase):
         assert expected == actual
 
     # TODO: Add new tests from PR
+
+    def test_from_gh_project(self):
+        # Cases to implement:
+        # - zero, one, and two comments
+        # - IssueState capitalization and trimming
+        # - zero, one, and two labels
+        # - zero, one, and two assignees
+        # - Story points in missing, in first, in second position
+        # - fixVersion mapping present and absent
+        # - milestone present and missing
+
+        self.fail("Unimplemented")

@@ -358,6 +358,19 @@ class TestUpstreamIssue(unittest.TestCase):
         self.mock_github_issue.get_comments.assert_any_call()
         self.mock_github_client.get_user.assert_called_with('mock_login')
 
+    def test_handle_gh_project_message(self):
+        # Cases:
+        # - labels
+        #   - zero, one, two in filter
+        #   - zero, one, two in issue
+        # - milestone
+        #   - zero, one in filter
+        #   - zero, one in issue
+        #   - number vs. str
+        # - other filter
+        #   - match, no match.
+        self.fail("Unimplemented")
+
     @mock.patch(PATH + 'api_call_get')
     @mock.patch(PATH + '_github_link_field_to_dict')
     def test_get_all_github_data(self,

@@ -51,6 +51,51 @@ project_items_query = '''
 '''
 
 
+def handle_gh_project_message(card, config):
+    """Handle an update from a GitHub Project V2
+
+    :param Dict card: the `contents` dict from the Project item
+    :param Dict config: Config File
+    :returns: Issue object
+    :rtype: sync2jira.intermediary.Issue
+    """
+    upstream = card['repository']['nameWithOwner']
+    filters = (config['sync2jira']
+               .get('filters', {})
+               .get('github', {})
+               .get(upstream, {}))
+
+    issue = card
+    for key, expected in filters.items():
+        if key == 'labels':
+            # If the issue has no labels which match the list in the filter for
+            # the corresponding repo, then we skip syncing this issue.
+            actual = {node['name'] for node in issue.get('labels', {}).get('nodes', {})}
+            if actual.isdisjoint(expected):
+                log.debug("Skipping Issue %s/%s:  requires label(s) %s but has %s",
+                          upstream, issue['number'], expected, actual)
+                return None
+        elif key == 'milestone':
+            # If the issue does not have the selected milestone number (as a
+            # string), then we skip syncing the issue.
+            actual = issue.get('milestone', {}).get('number')
+            if str(expected) != str(actual):
+                log.debug("Skipping Issue %s/%s:  requires milestone %s but has %s",
+                          upstream, issue['number'], expected, actual)
+                return None
+        else:
+            # Other filters.  (I'm not sure that there are any viable options,
+            # especially ones which work without special handling, but
+            # hopefully the logs will show if someone tries to use one.)
+            actual = issue.get(key)
+            if str(expected) != str(actual):
+                log.debug("Skipping Issue %s/%s:  requires %s value of %s but has %s",
+                          upstream, issue['number'], key, expected, actual)
+                return None
+
+    return i.Issue.from_gh_project(issue, upstream, config)
+
+
 def handle_github_message(msg, config, pr_filter=True):
     """
     Handle GitHub message from FedMsg.
