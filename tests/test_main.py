@@ -2,23 +2,29 @@ import unittest
 import unittest.mock as mock
 from unittest.mock import MagicMock
 from copy import deepcopy
+from typing import Union, Optional
 
 import sync2jira.main as m
 
-
 PATH = 'sync2jira.main.'
+CONFIG_ENTRY = dict[str, dict[
+    str, Union[str, bool, list, dict[str, dict[str, Union[str, dict[str, Union[str, int, list[dict[str, str]]]]]]]]]]
+ISSUE_ENTRY = dict[str, Union[str, int, dict[str, list[dict[str, Union[str, dict[str, list[dict[str, str]]]]]]],
+    list[dict[str, Union[Optional[str], list[dict[str, str]]]]]]]
+PR_ENTRY = ISSUE_ENTRY
 
 
 class TestMain(unittest.TestCase):
     """
     This class tests the main.py file under sync2jira
     """
+
     def setUp(self):
         """
         Set up the testing environment
         """
         # Mock Config dict
-        self.mock_config = {
+        self.mock_config: CONFIG_ENTRY = {
             'sync2jira': {
                 'jira': {
                     'mock_jira_instance': {'mock_jira': 'mock_jira'}
@@ -43,8 +49,9 @@ class TestMain(unittest.TestCase):
     def _check_for_exception(self, loader, target, exc=ValueError):
         try:
             m.load_config(loader)
-            assert False, "Exception expected."
+            self.fail('No exception raised where expected.')
         except exc as e:
+            self.assertIsInstance(e, exc)
             self.assertIn(target, repr(e))
 
     def test_config_validate_empty(self):
@@ -57,7 +64,7 @@ class TestMain(unittest.TestCase):
 
     def test_config_validate_misspelled_mappings(self):
         loader = lambda: {'sync2jira': {'map': {'githob': {}}}, 'jira': {}}
-        self._check_for_exception(loader, 'Specified handlers: "githob", must')
+        self._check_for_exception(loader, "Specified handlers: {'githob'}, must")
 
     def test_config_validate_missing_jira(self):
         loader = lambda: {'sync2jira': {'map': {'github': {}}}}
@@ -304,6 +311,7 @@ class TestMain(unittest.TestCase):
     @mock.patch(PATH + 'd_issue')
     def test_initialize_github_project(self, mock_d, mock_u, mock_query_ghp):
         config = deepcopy(self.mock_config)
+        config['sync2jira']['github_token'] = 'mock_token'
         timestamp = "2024-10-07T15:40:00Z"
         issues = [
             {
@@ -332,7 +340,7 @@ class TestMain(unittest.TestCase):
         mock_d.sync_with_jira.assert_not_called()
 
         # No configured projects
-        mapping['github_projects'] = []
+        mapping['github_projects'] = {}
         mock_query_ghp.reset_mock()
         m.initialize_github_project(timestamp, config)
         mock_query_ghp.assert_not_called()
@@ -340,19 +348,22 @@ class TestMain(unittest.TestCase):
         mock_d.sync_with_jira.assert_not_called()
 
         # One configured project containing one issue
-        mapping['github_projects'] = ["mock_project1"]
+        mapping['github_projects'] = {'mock_project1': {'github_project_number': 1}}
         mock_query_ghp.reset_mock()
         mock_query_ghp.side_effect = ((i for i in (issues[1],)),)
         m.initialize_github_project(timestamp, config)
-        mock_query_ghp.assert_called_once_with('mock_project1', timestamp)
-        mock_u.handle_gh_project_message.assert_called_with(issues[1], config)
+        mock_query_ghp.assert_called_once_with('mock_project1', 1, timestamp, 'mock_token')
+        mock_u.handle_gh_project_message.assert_called_with(issues[1], 'mock_project1', config)
         mock_d.sync_with_jira.assert_called_with(
             mock_u.handle_gh_project_message.return_value, config)
 
         # Three configured projects, the first with two issues, the second with
         # one, the third with none.
-        mapping['github_projects'] = [
-            "mock_project1", "mock_project2", "mock_project3"]
+        mapping['github_projects'] = {
+            'mock_project1': {'github_project_number': 1},
+            'mock_project2': {'github_project_number': 2},
+            'mock_project3': {'github_project_number': 3},
+        }
         mock_query_ghp.reset_mock()
         mock_u.reset_mock()
         mock_d.reset_mock()
@@ -362,12 +373,12 @@ class TestMain(unittest.TestCase):
             (i for i in ()))
         m.initialize_github_project(timestamp, config)
         mock_query_ghp.assert_has_calls([
-            mock.call('mock_project1', timestamp),
-            mock.call('mock_project2', timestamp)])
+            mock.call('mock_project1', 1, timestamp, 'mock_token'),
+            mock.call('mock_project2', 2, timestamp, 'mock_token')])
         mock_u.handle_gh_project_message.assert_has_calls((
-            mock.call(issues[2], config),
-            mock.call(issues[1], config),
-            mock.call(issues[0], config)))
+            mock.call(issues[2], 'mock_project1', config),
+            mock.call(issues[1], 'mock_project1', config),
+            mock.call(issues[0], 'mock_project2', config)))
         mock_d.sync_with_jira.assert_has_calls((
             mock.call(mock_u.handle_gh_project_message.return_value, config),
             mock.call(mock_u.handle_gh_project_message.return_value, config),
@@ -558,189 +569,219 @@ class TestMain(unittest.TestCase):
     @mock.patch(PATH + 'verify_content_lists')
     @mock.patch(PATH + 'sanity_check_dates')
     @mock.patch(PATH + 'requests')
-    def test_query_ghp(self, mock_requests, mock_scd, mock_vcl):
-        project_id = "mock_project_id"
+    def test_query_ghp(self, mock_requests, _mock_scd, _mock_vcl):
+        organization = "mock_organization"
+        project_number = 17
+        token = 'mock_token'
         timestamp = "2024-10-07T15:40:00Z"
+        cursors = ("", "MTAw", "MqAw", "MzAw", "Mzcw")
         pages = (
             {
                 "data": {
-                    "node": {
-                        "items": {
-                            "totalCount": 370,
-                            "nodes": [
-                                {
-                                    "content": {}
-                                },
-                                {
-                                    "content": {
-                                        "updatedAt": "2024-10-09T14:24:29Z",
-                                        "comments": {
-                                            "totalCount": 1,
-                                            "nodes": [{}]
-                                        },
-                                        "projectItems": {
-                                            "totalCount": 2,
-                                            "nodes": [
-                                                {
-                                                    "updatedAt": "2024-10-09T14:24:33Z",
-                                                    "fieldValues": {
-                                                        "totalCount": 7,
-                                                        "nodes": [{}, {}, {}, {}, {}, {}, {}]
+                    "organization": {
+                        "projectV2": {
+                            "updatedAt": "2024-11-13T18:15:53Z",
+                            "title": "Eclipse Che Team B Backlog",
+                            "items": {
+                                "totalCount": 4,
+                                "nodes": [
+                                    {
+                                        "content": {}
+                                    },
+                                    {
+                                        "content": {
+                                            "updatedAt": "2024-10-09T14:24:29Z",
+                                            "url": "https:/github.com/mock_org/mock_repo/issues/17",
+                                            "comments": {
+                                                "totalCount": 1,
+                                                "nodes": [{}]
+                                            },
+                                            "projectItems": {
+                                                "totalCount": 2,
+                                                "nodes": [
+                                                    {
+                                                        "updatedAt": "2024-10-09T14:24:33Z",
+                                                        "fieldValues": {
+                                                            "totalCount": 7,
+                                                            "nodes": [{}, {}, {}, {}, {}, {}, {}]
+                                                        },
+                                                        "project": {
+                                                            "number": project_number,
+                                                            "owner": {
+                                                                "login": organization
+                                                            }
+                                                        }
                                                     },
-                                                    "project": {
-                                                        "number": 5,
-                                                        "id": project_id
+                                                    {
+                                                        "updatedAt": "2024-10-09T14:24:33Z",
+                                                        "fieldValues": {
+                                                            "totalCount": 5,
+                                                            "nodes": [{}, {}, {}, {}, {}]
+                                                        },
+                                                        "project": {
+                                                            "number": project_number + 4,  # Wrong project
+                                                            "owner": {
+                                                                "login": organization
+                                                            }
+                                                        }
                                                     }
-                                                },
-                                                {
-                                                    "updatedAt": "2024-10-09T14:24:33Z",
-                                                    "fieldValues": {
-                                                        "totalCount": 5,
-                                                        "nodes": [{}, {}, {}, {}, {}]
-                                                    },
-                                                    "project": {
-                                                        "number": 9,
-                                                        "id": project_id + '-wrong',
-                                                    }
-                                                }
-                                            ]
-                                        },
-                                        "labels": {
-                                            "totalCount": 1,
-                                            "nodes": [
-                                                {}
-                                            ]
-                                        },
-                                        "closedByPullRequestsReferences": {
-                                            "totalCount": 0,
-                                            "nodes": []
+                                                ]
+                                            },
+                                            "labels": {
+                                                "totalCount": 1,
+                                                "nodes": [
+                                                    {}
+                                                ]
+                                            },
+                                            "closedByPullRequestsReferences": {
+                                                "totalCount": 0,
+                                                "nodes": []
+                                            }
                                         }
-                                    }
-                                },
-                                {
-                                    "content": {
-                                        "updatedAt": "2024-05-27T02:21:26Z",
-                                        "comments": {
-                                            "totalCount": 2,
-                                            "nodes": [{}, {}]
-                                        },
-                                        "projectItems": {
-                                            "totalCount": 0,
-                                            "nodes": []
-                                        },
-                                        "labels": {
-                                            "totalCount": 1,
-                                            "nodes": [{}]
-                                        },
-                                        "closedByPullRequestsReferences": {
-                                            "totalCount": 0,
-                                            "nodes": []
+                                    },
+                                    {
+                                        "content": {
+                                            "updatedAt": "2024-05-27T02:21:26Z",
+                                            "url": "https:/github.com/mock_org/mock_repo/issues/17",
+                                            "comments": {
+                                                "totalCount": 2,
+                                                "nodes": [{}, {}]
+                                            },
+                                            "projectItems": {
+                                                "totalCount": 0,
+                                                "nodes": []
+                                            },
+                                            "labels": {
+                                                "totalCount": 1,
+                                                "nodes": [{}]
+                                            },
+                                            "closedByPullRequestsReferences": {
+                                                "totalCount": 0,
+                                                "nodes": []
+                                            }
                                         }
-                                    }
-                                },
-                                {
-                                    "content": {}
-                                },
-                            ],
-                            "pageInfo": {
-                                "endCursor": "MTAw",
-                                "hasNextPage": True
+                                    },
+                                    {
+                                        "content": {}
+                                    },
+                                ],
+                                "pageInfo": {
+                                    "endCursor": cursors[1],
+                                    "hasNextPage": True
+                                }
                             }
                         }
-                    },
+                    }
                 }
             },
             {
                 "data": {
-                    "node": {
-                        "items": {
-                            "totalCount": 370,
-                            "nodes": [],
-                            "pageInfo": {
-                                "endCursor": "MqAw",
-                                "hasNextPage": True
+                    "organization": {
+                        "projectV2": {
+                            "updatedAt": "2024-11-13T18:15:53Z",
+                            "title": "Eclipse Che Team B Backlog",
+                            "items": {
+                                "totalCount": 0,
+                                "nodes": [],
+                                "pageInfo": {
+                                    "endCursor": cursors[2],
+                                    "hasNextPage": True
+                                }
                             }
                         }
-                    },
+                    }
                 }
             },
             {
                 "data": {
-                    "node": {
-                        "items": {
-                            "totalCount": 370,
-                            "nodes": [
-                                {
-                                    "content": {}
-                                },
-                                {
-                                    "content": {}
-                                },
-                            ],
-                            "pageInfo": {
-                                "endCursor": "MzAw",
-                                "hasNextPage": True
+                    "organization": {
+                        "projectV2": {
+                            "updatedAt": "2024-11-13T18:15:53Z",
+                            "title": "Eclipse Che Team B Backlog",
+                            "items": {
+                                "totalCount": 2,
+                                "nodes": [
+                                    {
+                                        "content": {}
+                                    },
+                                    {
+                                        "content": {}
+                                    },
+                                ],
+                                "pageInfo": {
+                                    "endCursor": cursors[3],
+                                    "hasNextPage": True
+                                }
                             }
                         }
-                    },
+                    }
                 }
             },
             {
                 "data": {
-                    "node": {
-                        "items": {
-                            "totalCount": 370,
-                            "nodes": [
-                                {
-                                    "content": {
-                                        "updatedAt": "2024-10-09T14:24:29Z",
-                                        "comments": {
-                                            "totalCount": 1,
-                                            "nodes": [{}]
-                                        },
-                                        "projectItems": {
-                                            "totalCount": 2,
-                                            "nodes": [
-                                                {
-                                                    "updatedAt": "2024-10-09T14:24:33Z",
-                                                    "fieldValues": {
-                                                        "totalCount": 7,
-                                                        "nodes": [{}, {}, {}, {}, {}, {}, {}]
+                    "organization": {
+                        "projectV2": {
+                            "updatedAt": "2024-11-13T18:15:53Z",
+                            "title": "Eclipse Che Team B Backlog",
+                            "items": {
+                                "totalCount": 1,
+                                "nodes": [
+                                    {
+                                        "content": {
+                                            "updatedAt": "2024-10-09T14:24:29Z",
+                                            "url": "https:/github.com/mock_org/mock_repo/issues/17",
+                                            "comments": {
+                                                "totalCount": 1,
+                                                "nodes": [{}]
+                                            },
+                                            "projectItems": {
+                                                "totalCount": 2,
+                                                "nodes": [
+                                                    {
+                                                        "updatedAt": "2024-10-09T14:24:33Z",
+                                                        "fieldValues": {
+                                                            "totalCount": 7,
+                                                            "nodes": [{}, {}, {}, {}, {}, {}, {}]
+                                                        },
+                                                        "project": {
+                                                            "number": project_number,
+                                                            "owner": {
+                                                                "login": organization
+                                                            }
+                                                        }
                                                     },
-                                                    "project": {
-                                                        "number": 5,
-                                                        "id": project_id,
+                                                    {
+                                                        "updatedAt": "2024-10-09T14:24:33Z",
+                                                        "fieldValues": {
+                                                            "totalCount": 5,
+                                                            "nodes": [{}, {}, {}, {}, {}]
+                                                        },
+                                                        "project": {
+                                                            "number": project_number,
+                                                            "owner": {
+                                                                "login": organization + '-wrong'  # Wrong organization
+                                                            }
+                                                        }
                                                     }
-                                                },
-                                                {
-                                                    "updatedAt": "2024-10-09T14:24:33Z",
-                                                    "fieldValues": {
-                                                        "totalCount": 5,
-                                                        "nodes": [{}, {}, {}, {}, {}]
-                                                    },
-                                                    "project": {
-                                                        "number": 9,
-                                                        "id": project_id + '-wrong',
-                                                    }
-                                                }
-                                            ]
-                                        },
-                                        "labels": {
-                                            "totalCount": 1,
-                                            "nodes": [
-                                                {}
-                                            ]
-                                        },
-                                        "closedByPullRequestsReferences": {
-                                            "totalCount": 0,
-                                            "nodes": []
+                                                ]
+                                            },
+                                            "labels": {
+                                                "totalCount": 1,
+                                                "nodes": [
+                                                    {}
+                                                ]
+                                            },
+                                            "closedByPullRequestsReferences": {
+                                                "totalCount": 0,
+                                                "nodes": []
+                                            }
                                         }
-                                    }
-                                },
-                             ],
-                            "pageInfo": {
-                                "endCursor": "Mzcw",
-                                "hasNextPage": False
+                                    },
+                                ],
+                                "pageInfo": {
+                                    "endCursor": cursors[4],
+                                    "hasNextPage": False
+                                }
                             }
                         }
                     }
@@ -752,12 +793,21 @@ class TestMain(unittest.TestCase):
 
         # Test the request setup and error path
         mock_response.status_code = 418
-        results = list(m.query_ghp(project_id, timestamp))
+        results = list(
+            m.query_ghp(organization, project_number, timestamp, token))
         mock_requests.post.assert_called_once()
-        self.assertIn(project_id, mock_requests.post.call_args.kwargs['data'])
-        self.assertIn('"CURSOR": ""', mock_requests.post.call_args.kwargs['data'])
-        self.assertEqual(mock_requests.post.call_args.kwargs['headers']['Authorization'],
-                         'Bearer ' + m.GITHUB_TOKEN)
+        self.assertEqual(
+            organization,
+            mock_requests.post.call_args.kwargs['json']['variables']['ORGANIZATION'])
+        self.assertEqual(
+            project_number,
+            mock_requests.post.call_args.kwargs['json']['variables']['PROJECT_NUMBER'])
+        self.assertEqual(
+            '',
+            mock_requests.post.call_args.kwargs['json']['variables']['CURSOR'])
+        self.assertEqual(
+            mock_requests.post.call_args.kwargs['headers']['Authorization'],
+            'Bearer ' + token)
         mock_response.json.assert_not_called()
         self.assertEqual(results, [])
 
@@ -766,10 +816,12 @@ class TestMain(unittest.TestCase):
         mock_response.reset_mock()
         mock_response.status_code = 200
         mock_response.json.side_effect = (pages[-1],)
-        results = list(m.query_ghp(project_id, timestamp))
-        mock_requests.post.assert_called_once()  # TODO:  Check the next page and cursor values.
+        results = list(m.query_ghp(organization, project_number, timestamp, token))
+        mock_requests.post.assert_called_once()
         mock_response.json.assert_called_once()
-        expected = [node['content'] for node in pages[-1]['data']['node']['items']['nodes'] if node['content']]
+        expected = [node['content']
+                    for node in pages[-1]['data']['organization']['projectV2']['items']['nodes']
+                    if node['content']]
         self.assertEqual(results, expected)
 
         # Test when the response is multiple pages; also check that "old" items
@@ -778,16 +830,21 @@ class TestMain(unittest.TestCase):
         mock_response.reset_mock()
         mock_response.status_code = 200
         mock_response.json.side_effect = pages
-        results = list(m.query_ghp(project_id, timestamp))
-        self.assertEqual(mock_requests.post.call_count, len(pages))  # TODO:  Check the next page and cursor values.
+        results = list(m.query_ghp(organization, project_number, timestamp, token))
+        self.assertEqual(mock_requests.post.call_count, len(pages))
         self.assertEqual(mock_response.json.call_count, len(pages))
-        expected = [n['content'] for p in pages for n in p['data']['node']['items']['nodes']
-                    if n['content'] and n['content']['updatedAt'] >= timestamp]
+        for idx, call in enumerate(mock_requests.post.call_args_list):
+            self.assertEqual(cursors[idx], call.kwargs['json']['variables']['CURSOR'])
+        expected = [
+            n['content']
+            for p in pages for n in p['data']['organization']['projectV2']['items']['nodes']
+            if n['content'] and n['content']['updatedAt'] >= timestamp]
         self.assertEqual(results, expected)
         for result in results:
             project_items = result['projectItems']['nodes']
             self.assertEqual(len(project_items), 1)
-            self.assertEqual(project_items[0]['project']['id'], project_id)
+            self.assertEqual(project_items[0]['project']['number'], project_number)
+            self.assertEqual(project_items[0]['project']['owner']['login'], organization)
 
     @mock.patch(PATH + 'get')
     def test_query(self, mock_get):
