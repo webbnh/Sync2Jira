@@ -21,14 +21,15 @@
 
 Run with systemd, please.
 """
-# Build-In Modules
-import logging
-import warnings
-import traceback
-from time import sleep
-import requests
+# Python Standard Library Modules
 from copy import deepcopy
+from datetime import datetime, timezone
+import logging
 import os
+import requests
+from time import sleep
+import traceback
+import warnings
 
 # 3rd Party Modules
 import fedmsg
@@ -86,7 +87,6 @@ pr_handlers = {
 DATAGREPPER_URL = "http://apps.fedoraproject.org/datagrepper/raw"
 INITIALIZE = os.getenv('INITIALIZE', '0')
 GITHUB_API = 'https://api.github.com/graphql'
-GITHUB_TOKEN = os.getenv('SYNC2JIRA_GITHUB_TOKEN', '')
 GHP_LAST_UPDATE = os.getenv('SYNC2JIRA_LAST_UPDATE', '')
 
 
@@ -117,14 +117,10 @@ def load_config(loader=fedmsg.config.load_config):
     if 'map' not in config['sync2jira']:
         raise ValueError("No sync2jira.map section found in fedmsg.d/ config")
 
-    possible = {'github'}
+    possible = {'github', 'github_projects'}
     specified = set(config['sync2jira']['map'].keys())
     if not specified.issubset(possible):
-        message = "Specified handlers: %s, must be a subset of %s."
-        raise ValueError(message % (
-            ", ".join(f'"{item}"' for item in specified),
-            ", ".join(f'"{item}"' for item in possible),
-        ))
+        raise ValueError(f"Specified handlers: {specified}, must be a subset of {possible}.")
 
     if 'jira' not in config['sync2jira']:
         raise ValueError("No sync2jira.jira section found in fedmsg.d/ config")
@@ -134,7 +130,8 @@ def load_config(loader=fedmsg.config.load_config):
         'listen': True,
     }
     for key, value in defaults.items():
-        config['sync2jira'][key] = config['sync2jira'].get(key, value)
+        if key not in config['sync2jira']:
+            config['sync2jira'][key] = value
 
     return config
 
@@ -266,275 +263,322 @@ def initialize_github_project(timestamp, config):
     :return: Nothing
     """
 
+    gh_token = config['sync2jira'].get('github_token')
+    if not gh_token:
+        gh_token = os.getenv('SYNC2JIRA_GITHUB_TOKEN', '')
+
     # For each project in the configuration map
-    for proj in config['sync2jira']['map'].get('github_projects', {}):
+    for org_name, org in config['sync2jira']['map'].get('github_projects', {}).items():
         # Query GitHub, loop over the resulting issues, and sync them with Jira.
-        for entry in query_ghp(proj, timestamp):
+        for entry in query_ghp(org_name, org['github_project_number'], timestamp, gh_token):
             log.debug("Handling %s Issue #%s", entry['repository']['nameWithOwner'], entry['number'])
-            issue = u_issue.handle_gh_project_message(entry, config)
+            issue = u_issue.handle_gh_project_message(entry, org_name, config)
             d_issue.sync_with_jira(issue, config)
 
 
-def query_ghp(proj, timestamp):
-    """A generator which yields the `content` of each node in a GitHub project V2 item list"""
-    gql_query = '''
-        query($PROJECT_ID: String!, $CURSOR: String!) Node {
-            node(id: $PROJECT_ID) {
-                ... on ProjectV2 {
-                    updatedAt
-                    title
-                    items(first: 100, after: $CURSOR) {
-                        totalCount
-                        nodes {
-                            content {
-                                ... on Issue {
-                                    __typename
-                                    updatedAt
-                                    IssueState: state
-                                    title
-                                    url
-                                    body
-                                    repository {
-                                        updatedAt
-                                        nameWithOwner
-                                        shortDescriptionHTML
-                                        description
-                                    }
-                                    number
-                                    assignees(first: 8) {
-                                        totalCount
-                                        nodes {
-                                            ...UserInfo
-                                        }
-                                    }
-                                    author {
+gql_query = '''
+    query ($ORGANIZATION: String!, $PROJECT_NUMBER: Int!, $CURSOR: String!) {
+        organization(login: $ORGANIZATION) {
+            projectV2(number: $PROJECT_NUMBER) {
+                updatedAt
+                title
+                items(first: 100, after: $CURSOR) {
+                    totalCount
+                    nodes {
+                        content {
+                            ... on Issue {
+                                __typename
+                                updatedAt
+                                state
+                                title
+                                id
+                                url
+                                body
+                                repository {
+                                    ...RepoInfo
+                                }
+                                number
+                                assignees(first: 4) {
+                                    totalCount
+                                    nodes {
                                         ...UserInfo
                                     }
-                                    comments(first: 100) {
-                                        totalCount
-                                        nodes {
-                                            updatedAt
-                                            author {
-                                                ...UserInfo
-                                            }
-                                            body
-                                            id
-                                            createdAt
-                                        }
-                                    }
-                                    closed
-                                    milestone {
+                                }
+                                author {
+                                    ...UserInfo
+                                }
+                                comments(first: 50) {
+                                    totalCount
+                                    nodes {
                                         updatedAt
-                                        title
-                                        description
-                                        state
-                                        dueOn
-                                        number
+                                        author {
+                                            ...UserInfo
+                                        }
+                                        body
+                                        id
+                                        createdAt
                                     }
-                                    projectItems(first: 16) {
-                                        totalCount
-                                        nodes {
-                                            updatedAt
-                                            fieldValues(first: 24) {
-                                                totalCount
-                                                nodes {
-                                                    __typename
-                                                    ... on ProjectV2ItemFieldValueCommon {
-                                                        updatedAt
-                                                        field {
-                                                            ... on ProjectV2FieldCommon {
-                                                                name
-                                                            }
+                                }
+                                closed
+                                milestone {
+                                    updatedAt
+                                    title
+                                    description
+                                    state
+                                    dueOn
+                                    number
+                                }
+                                projectItems(first: 8) {
+                                    totalCount
+                                    nodes {
+                                        updatedAt
+                                        fieldValues(first: 18) {
+                                            totalCount
+                                            nodes {
+                                                __typename
+                                                ... on ProjectV2ItemFieldValueCommon {
+                                                    updatedAt
+                                                    field {
+                                                        ... on ProjectV2FieldCommon {
+                                                            name
                                                         }
                                                     }
-                                                    ... on ProjectV2ItemFieldDateValue {
-                                                        date
-                                                    }
-                                                    ... on ProjectV2ItemFieldIterationValue {
-                                                        duration
-                                                        startDate
-                                                        title
-                                                    }
-                                                    ... on ProjectV2ItemFieldSingleSelectValue {
-                                                        name
-                                                    }
-                                                    ... on ProjectV2ItemFieldTextValue {
-                                                        text
-                                                    }
-                                                    ... on ProjectV2ItemFieldNumberValue {
-                                                        number
-                                                    }
-                                                    ... on ProjectV2ItemFieldUserValue {
-                                                        field {
-                                                            ... on ProjectV2FieldCommon {
-                                                                name
-                                                            }
-                                                        }
-                                                        users(first: 8) {
-                                                            totalCount
-                                                            nodes {
-                                                                ...UserInfo
-                                                            }
+                                                }
+                                                ... on ProjectV2ItemFieldDateValue {
+                                                    date
+                                                }
+                                                ... on ProjectV2ItemFieldIterationValue {
+                                                    duration
+                                                    startDate
+                                                    title
+                                                }
+                                                ... on ProjectV2ItemFieldSingleSelectValue {
+                                                    name
+                                                }
+                                                ... on ProjectV2ItemFieldTextValue {
+                                                    text
+                                                }
+                                                ... on ProjectV2ItemFieldNumberValue {
+                                                    number
+                                                }
+                                                ... on ProjectV2ItemFieldUserValue {
+                                                    field {
+                                                        ... on ProjectV2FieldCommon {
+                                                            name
                                                         }
                                                     }
-                                                    ... on ProjectV2ItemFieldRepositoryValue {
-                                                        field {
-                                                            ... on ProjectV2FieldCommon {
-                                                                name
-                                                            }
-                                                        }
-                                                        repository {
-                                                            updatedAt
-                                                            nameWithOwner
-                                                            shortDescriptionHTML
-                                                            description
+                                                    users(first: 1) {
+                                                        totalCount
+                                                        nodes {
+                                                            ...UserInfo
                                                         }
                                                     }
-                                                    ... on ProjectV2ItemFieldLabelValue {
-                                                        field {
-                                                            ... on ProjectV2FieldCommon {
-                                                                name
-                                                            }
+                                                }
+                                                ... on ProjectV2ItemFieldRepositoryValue {
+                                                    field {
+                                                        ... on ProjectV2FieldCommon {
+                                                            name
                                                         }
-                                                        firstLabel: labels(first: 1) {
-                                                            totalCount
-                                                            nodes {
-                                                                updatedAt
-                                                                name
-                                                            }
+                                                    }
+                                                    repository {
+                                                        ...RepoInfo
+                                                    }
+                                                }
+                                                ... on ProjectV2ItemFieldLabelValue {
+                                                    field {
+                                                        ... on ProjectV2FieldCommon {
+                                                            name
                                                         }
                                                     }
                                                 }
                                             }
-                                            project {
-                                                number
-                                                id
-                                                title
+                                        }
+                                        project {
+                                            number
+                                            owner {
+                                                ... on Organization {
+                                                    login
+                                                }
                                             }
                                         }
                                     }
-                                    labels(first: 24) {
-                                        totalCount
-                                        nodes {
-                                            updatedAt
-                                            name
-                                        }
+                                }
+                                labels(first: 16) {
+                                    totalCount
+                                    nodes {
+                                        updatedAt
+                                        name
                                     }
-                                    closedByPullRequestsReferences(includeClosedPrs: true, first: 16) {
-                                        totalCount
-                                        nodes {
-                                            ...PullRequestInfo
-                                        }
+                                }
+                                closedByPullRequestsReferences(includeClosedPrs: true, first: 6) {
+                                    totalCount
+                                    nodes {
+                                        ...PullRequestInfo
                                     }
                                 }
                             }
                         }
-                        pageInfo {
-                            endCursor
-                            hasNextPage
-                        }
+                    }
+                    pageInfo {
+                        endCursor
+                        hasNextPage
                     }
                 }
             }
-            rateLimit(dryRun: false) {
-                cost
-                limit
-                nodeCount
-                remaining
-                resetAt
-                used
-            }
         }
-
-        fragment UserInfo on User {
-            updatedAt
-            name
-            login
-            email
+        rateLimit(dryRun: false) {
+            cost
+            limit
+            nodeCount
+            remaining
+            resetAt
+            used
         }
+    }
 
-        fragment PullRequestInfo on PullRequest {
-            updatedAt
-            title
-            PRState: state
+    fragment UserInfo on User {
+        updatedAt
+        name
+        login
+        email
+    }
+
+    fragment RepoInfo on Repository {
+        updatedAt
+        nameWithOwner
+        shortDescriptionHTML
+    }
+
+    fragment PullRequestInfo on PullRequest {
+        updatedAt
+        title
+        PRState: state
+        baseRef {
             repository {
-                updatedAt
-                nameWithOwner
-                shortDescriptionHTML
-                description
+                ...RepoInfo
             }
-            number
-            body
-            assignees(first: 10) {
-                totalCount
-                nodes {
-                    ...UserInfo
-                }
-            }
-            author {
+        }
+        repository {
+            ...RepoInfo
+        }
+        number
+        body
+        assignees(first: 4) {
+            totalCount
+            nodes {
                 ...UserInfo
             }
-            projectCards(first: 10) {
-                totalCount
-                nodes {
-                    state
-                    note
-                }
+        }
+        author {
+            ...UserInfo
+        }
+        projectCards(first: 8) {
+            totalCount
+            nodes {
+                state
+                note
             }
-        }'''
-    gql_variables = '''
-        variables {{
-           "PROJECT_ID": {},
-           "CURSOR": "{}"
-        }}'''
+        }
+    }'''
 
+
+def query_ghp(organization, project_number, timestamp, gh_token):
+    """A generator which yields the `content` of each node in a GitHub project V2 item list"""
     has_next_page = True
     cursor = ""
+    # TODO:
+    #  - Add high-water-marking for `totalCount` values;
+    #  - Add average items per query (seeking a lower projectV2.items max to lower overall cost points)
+    queries = 0
     server_side_skipped = 0
     no_new_updates = 0
     updates = 0
     while has_next_page:
+        log.debug("Querying GitHub API for %s/%s (cursor '%s')", organization, project_number, cursor)
         response = requests.post(
             url=GITHUB_API,
-            data=gql_query + gql_variables.format(proj, cursor),
-            headers={'Authorization': 'Bearer ' + GITHUB_TOKEN},
+            json={
+                'query': gql_query,
+                'variables': {
+                    'ORGANIZATION': organization,
+                    'PROJECT_NUMBER': project_number,
+                    'CURSOR': cursor,
+                    # TODO: Add variable for projectV2.items.first value
+                },
+            },
+            headers={'Authorization': 'Bearer ' + gh_token},
             allow_redirects=True,
         )
         if response.status_code != 200:
-            log.warning("GitHub API error: %s", response.text)
+            log.warning("GitHub API error accessing %s/%s: %s",
+                        organization, project_number, response.text)
             break
-        data = response.json()
 
-        items = data['data']['node']['items']
+        data = response.json()
+        errors = data.get('errors', [])
+        if errors:
+            if any(e.get('type') == 'RATE_LIMITED' for e in errors):
+                reset_timestamp = int(response.headers['X-RateLimit-Reset'])
+                reset_time = datetime.fromtimestamp(reset_timestamp, timezone.utc)
+                log.warning(
+                    "GitHub API rate limit exceeded, blocked until %s; waiting.",
+                    reset_time)
+                delay = reset_time - datetime.now(timezone.utc)
+                sleep(delay.total_seconds() + 60)  # An extra minute to cover clock-skew
+                log.info('Retrying GitHub')
+                continue  # Retry with the same cursor
+            log.warning(
+                "GitHub API error accessing %s/%s: %s",
+                organization, project_number, '; '.join(e['message'] for e in errors))
+            break
+
+        items = data['data']['organization']['projectV2']['items']
+        log.debug(
+            "Received %s items (%s rate limit points remaining until %s)",
+            len(items['nodes']),
+            response.headers['X-Ratelimit-Remaining'],
+            datetime.fromtimestamp(int(response.headers['X-RateLimit-Reset']),
+                                   timezone.utc))
         for item in items['nodes']:
             content = item['content']
             if not content:
-                # Items which are filtered out on the server side show up as empty entries in the response
+                # Items which are filtered out on the server side show up as
+                # empty entries in the response.
                 server_side_skipped += 1
                 continue
 
             verify_content_lists(content)
 
-            # Skip items which we've already done in a previous run
-            if content['updatedAt'] < timestamp:
-                sanity_check_dates(content, proj)
-                no_new_updates += 1
-                continue
-
-            # Remove backlinks from other projects; there should be only one.
-            # (Note that we must be very careful enumerating over a list as we
-            # delete items from it!)
+            # Remove backlinks from other projects; there should be no more
+            # than one.  Note that, somehow, we sometimes have issues with _no_
+            # project backlink...I'm not sure how that can happen, given that
+            # we start from a project to get here, but....
+            # (Note:  we must be very careful iterating over an enumerated list
+            # as we delete items from it!)
             proj_items = content['projectItems']['nodes']
+            if len(proj_items) == 0:
+                log.debug("Issue %s found without backlink from %s/%s",
+                          content['url'], organization, project_number)
             idx = 0
             while idx < len(proj_items):
-                if proj_items[idx]['project']['id'] != proj:
+                if (proj_items[idx]['project']['number'] != project_number
+                        or proj_items[idx]['project']['owner']['login'] != organization):
                     # If this item is for a project which is not the one that
                     # we requested, remove the entry.  (Note that this shortens
                     # the list and moves a new entry into the _current_ index.)
                     del proj_items[idx]
                 else:
                     idx += 1
-            assert len(proj_items) == 1
+            assert len(proj_items) <= 1
+
+            # Skip items which we've already done in a previous run; we have to
+            # check both the issue itself and the information maintained about
+            # it in the project, if there is an associated project.
+            if ((not proj_items or proj_items[0]['updatedAt'] < timestamp)
+                    and content['updatedAt'] < timestamp):
+                sanity_check_dates(content)
+                no_new_updates += 1
+                continue
 
             updates += 1
             yield content
@@ -542,29 +586,40 @@ def query_ghp(proj, timestamp):
         page_info = items['pageInfo']
         has_next_page = page_info['hasNextPage']
         cursor = page_info['endCursor']
+        queries += 1
 
-    log.info("%s:  %d issues with new updates, %d with no updates, %d server-side filtered",
-             proj, updates, no_new_updates, server_side_skipped)
+    log.info("%s/%s:  %d queries, %d issues with new updates, %d with no updates, %d server-side filtered",
+             organization, project_number, queries, updates, no_new_updates, server_side_skipped)
 
 
 def verify_content_lists(content):
     """Helper function which verifies that we received all of the list entries
     that we were supposed to get.
 
-    If the 'totalCount' value is less than the length, then we need to handle
-    pagination.
+    If the 'totalCount' value is not equal to the length received, then we need
+    to increase the request limit (which makes the query expensive) or add
+    pagination (which also subjects us to the rate limit cap).
 
     :param Dict content: the Issue content
     :return: Nothing
     """
+    assert content['assignees']['totalCount'] == len(content['assignees']['nodes'])
     assert content['comments']['totalCount'] == len(content['comments']['nodes'])
     assert content['projectItems']['totalCount'] == len(content['projectItems']['nodes'])
-    fields = content['projectItems']['node']['fieldValues']
-    assert fields['totalCount'] == len(fields['nodes'])
+    for fields in (pi['fieldValues'] for pi in content['projectItems']['nodes']):
+        assert fields['totalCount'] == len(fields['nodes'])
+        if 'users' in fields:
+            usr = fields['users']
+            assert usr['totalCount'] == len(usr['nodes'])
     assert content['labels']['totalCount'] == len(content['labels']['nodes'])
+    cpr = content['closedByPullRequestsReferences']
+    assert cpr['totalCount'] == len(cpr['nodes'])
+    for prs in cpr['nodes']:
+        assert prs['assignees']['totalCount'] == len(prs['assignees']['nodes'])
+        assert prs['projectCards']['totalCount'] == len(prs['projectCards']['nodes'])
 
 
-def sanity_check_dates(content, proj):
+def sanity_check_dates(content):
     """Helper function which performs some sanity checks on the content, to
     make sure that we're not skipping something unexpectedly.
 
@@ -572,18 +627,16 @@ def sanity_check_dates(content, proj):
            GitHub's GraphQL API.
 
     :param Dict content: the Issue content
-    :param str proj: the project ID string
     :return: Nothing
     """
     for comment in content['comments']['nodes']:
         assert comment['updatedAt'] <= content['updatedAt']
-    for proj_item in content['projectItems']['nodes']:
-        if proj_item['project']['id'] != proj:
-            # For some reason, GraphQL sometimes returns items which
-            # are _not_ in the project that we requested, typically
-            # when the item is in more than one project.  Ignore these.
-            continue
-        assert proj_item['updatedAt'] <= content['updatedAt']
+    proj_nodes = content['projectItems']['nodes']
+    assert len(proj_nodes) <= 1
+    field_nodes = proj_nodes[0]['fieldValues']['nodes'] if proj_nodes else []
+    for node in field_nodes:
+        updated_at = node.get('updatedAt')
+        assert updated_at is None or updated_at <= proj_nodes[0]['updatedAt']
 
 
 def initialize_recent(config):
@@ -720,7 +773,7 @@ def main(runtime_test=False, runtime_config=None):
                 return
         elif GHP_LAST_UPDATE:
             # Pull directly from a GitHub Project
-            log.info("Initialization False. Pulling data since %s from a GitHub Project...", GHP_LAST_UPDATE)
+            log.info("Initialization False. Pulling data since %s from GitHub Projects...", GHP_LAST_UPDATE)
             initialize_github_project(GHP_LAST_UPDATE, config)
         else:
             # Pull from datagrepper for the last 10 minutes
@@ -734,7 +787,7 @@ def main(runtime_test=False, runtime_config=None):
         if not config['sync2jira']['develop']:
             # Only send the failure email if we are not developing
             report_failure(config)
-            raise
+        raise
 
 
 def report_failure(config):
