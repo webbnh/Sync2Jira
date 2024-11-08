@@ -1,12 +1,14 @@
 import unittest
 import unittest.mock as mock
 from copy import deepcopy
-from distutils.command.config import config
+from typing import Union, Optional
 
 import sync2jira.intermediary as i
 
 PATH = 'sync2jira.intermediary.'
-
+CONFIG_ENTRY = dict[str, dict[str, dict[str, dict[str, Union[str, dict[str, Union[str, list[dict[str, str]]]]]]]]]
+ISSUE_ENTRY = dict[str, Union[str, int, dict[str, list[dict[str, Union[str, dict[str, list[dict[str, str]]]]]]], list[dict[str, Union[Optional[str], list[dict[str, str]]]]]]]
+PR_ENTRY = ISSUE_ENTRY
 
 class TestIntermediary(unittest.TestCase):
     """
@@ -14,7 +16,7 @@ class TestIntermediary(unittest.TestCase):
     """
 
     def setUp(self):
-        self.mock_config = {
+        self.mock_config: CONFIG_ENTRY = {
             'sync2jira': {
                 'map': {
                     'github': {
@@ -24,7 +26,7 @@ class TestIntermediary(unittest.TestCase):
             }
         }
 
-        self.mock_github_issue = {
+        self.mock_github_issue: ISSUE_ENTRY = {
             'comments': [{
                 'author': 'mock_author',
                 'name': 'mock_name',
@@ -47,7 +49,7 @@ class TestIntermediary(unittest.TestCase):
             'storypoints': 'mock_storypoints',
         }
 
-        self.mock_github_pr = {
+        self.mock_github_pr: PR_ENTRY = {
             'comments': [{
                 'author': 'mock_author',
                 'name': 'mock_name',
@@ -247,21 +249,22 @@ class TestIntermediary(unittest.TestCase):
         # - zero, one, and two labels
         # - zero, one, and two comments
         # - comment body present and missing
-        # - IssueState capitalization and trimming
+        # - state capitalization and trimming
         # - story points missing, in first position, in second position
         # - fixVersion mapping present and missing
         # - milestone present and missing
 
         mock_config = deepcopy(self.mock_config)
-        upstream = 'mock_org/mock_repo'
-        mock_config['sync2jira']['map']['github'][upstream] = {
-            'mapping': [{'fixVersion': "mock_XXX"}]}
-        gh_issue = {
+        org_name = 'mock_org'
+        upstream = org_name + '/mock_repo'
+        mock_config['sync2jira']['map']['github_projects'] = {org_name: {
+            'mapping': [{'fixVersion': "mock_XXX"}]}}
+        gh_issue: ISSUE_ENTRY = {
             'title': 'mock_title',
             'url': 'mock_url',
             'body': 'mock_body',
             'author': {'name': 'mock_author'},
-            'IssueState': ' CLOSED ',
+            'state': ' CLOSED ',
             'id': 'mock_id',
             'number': 'mock_number',
             'comments': {'nodes': []},
@@ -326,10 +329,10 @@ class TestIntermediary(unittest.TestCase):
             gh_issue['projectItems']['nodes'] = [
                 {'fieldValues': {'nodes': field_value_nodes[idx:]}}]
             gh_issue['milestone'] = 'mock_milestone' if c - idx > 0 else None
-            i_issue = i.Issue.from_gh_project(gh_issue, upstream, mock_config)
+            i_issue = i.Issue.from_gh_project(gh_issue, upstream, org_name, mock_config)
             self.assertEqual('[mock_org/mock_repo] mock_title', i_issue.title)
             self.assertEqual(upstream, i_issue.upstream)
-            self.assertEqual(mock_config['sync2jira']['map']['github'][upstream], i_issue.downstream)
+            self.assertEqual(mock_config['sync2jira']['map']['github_projects'][org_name], i_issue.downstream)
             self.assertEqual('mock_body', i_issue.content)
             self.assertEqual({'fullname': 'mock_author'}, i_issue.reporter)
             self.assertEqual('Closed', i_issue.status)

@@ -1188,7 +1188,7 @@ def sync_with_jira(issue, config):
         raise JIRAError
 
     if issue.downstream.get('issue_updates'):
-        if issue.source == 'github' and issue.content and \
+        if issue.source in ('github', 'github_projects') and issue.content and \
                 'github_markdown' in issue.downstream['issue_updates']:
             issue.content = pypandoc.convert_text(issue.content, 'jira', format='gfm')
 

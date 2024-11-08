@@ -111,19 +111,20 @@ ghquery = '''
 '''
 
 
-def handle_gh_project_message(card, config):
+def handle_gh_project_message(card, org_name, config):
     """Handle an update from a GitHub Project V2
 
     :param Dict card: the `contents` dict from the Project item
+    :param str org_name: the name of the GitHub organization
     :param Dict config: Config File
     :returns: Issue object
     :rtype: sync2jira.intermediary.Issue
     """
-    upstream = card['repository']['nameWithOwner']
+    repo = card['repository']['nameWithOwner']
     filters = (config['sync2jira']
                .get('filters', {})
                .get('github', {})
-               .get(upstream, {}))
+               .get(repo, {}))
 
     issue = card
     for key, expected in filters.items():
@@ -132,8 +133,8 @@ def handle_gh_project_message(card, config):
             # the corresponding repo, then we skip syncing this issue.
             actual = set(node['name'] for node in issue.get('labels', {}).get('nodes', []))
             if actual.isdisjoint(expected):
-                log.debug("Skipping Issue %s/%s:  requires label(s) %s but has %s",
-                          upstream, issue['number'], expected, actual)
+                log.debug("Skipping Issue %s/%s for organization %s:  requires label(s) %s but has %s",
+                          repo, issue['number'], org_name, expected, actual)
                 return None
         elif key == 'milestone':
             # If the issue does not have the selected milestone number (as a
@@ -141,8 +142,8 @@ def handle_gh_project_message(card, config):
             ms = issue.get('milestone')  # The 'milestone' key may be present with a value of None.
             actual = ms.get('number') if ms else ''
             if str(expected) != str(actual):
-                log.debug("Skipping Issue %s/%s:  requires milestone %s but has %s",
-                          upstream, issue['number'], expected, actual)
+                log.debug("Skipping Issue %s/%s for organization %s:  requires milestone %s but has %s",
+                          repo, issue['number'], org_name, expected, actual)
                 return None
         else:
             # Other filters.  (I'm not sure that there are any viable options,
@@ -150,11 +151,11 @@ def handle_gh_project_message(card, config):
             # hopefully the logs will show if someone tries to use one.)
             actual = issue.get(key)
             if str(expected) != str(actual):
-                log.debug("Skipping Issue %s/%s:  requires %s value of %s but has %s",
-                          upstream, issue['number'], key, expected, actual)
+                log.debug("Skipping Issue %s/%s for organization %s:  requires %s value of %s but has %s",
+                          repo, issue['number'], org_name, key, expected, actual)
                 return None
 
-    return i.Issue.from_gh_project(issue, upstream, config)
+    return i.Issue.from_gh_project(issue, repo, org_name, config)
 
 
 def handle_github_message(msg, config, pr_filter=True):

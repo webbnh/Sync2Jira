@@ -611,7 +611,9 @@ class TestUpstreamIssue(unittest.TestCase):
         card = {'repository': {'nameWithOwner': 'org/repo'}, 'number': 17, 'labels': {}}
         card_labels = ('label_1', 'label_2')
         config_filters = (
-            [],
+            "no org",
+            "no key",
+            [],  # FIXME:  What _should_ the response be in this case??
             ['nomatch', 'label_1'],
             ['label_1', 'label_2'],
             ['nomatch_1','nomatch_2']
@@ -621,14 +623,19 @@ class TestUpstreamIssue(unittest.TestCase):
             card['labels']['nodes'] = [{'name': l} for l in card_labels[:label_count]]
 
             for cf in config_filters:
-                config['sync2jira']['filters']['github']['org/repo'] = { 'labels': cf }
+                if cf == "no org":
+                    del config['sync2jira']['filters']['github']['org/repo']
+                elif cf == "no key":
+                    config['sync2jira']['filters']['github']['org/repo'] = {}
+                else:
+                    config['sync2jira']['filters']['github']['org/repo'] = { 'labels': cf }
 
-                response = u.handle_gh_project_message(card, config)
-                if set(card_labels[:label_count]).isdisjoint(cf):
+                response = u.handle_gh_project_message(card, 'org', config)
+                if isinstance(cf, list) and set(card_labels[:label_count]).isdisjoint(cf):
                     self.assertEqual(None, response)
                 else:
                     self.assertEqual('Successful Call!', response)
-                    mock_from_gh_project.assert_called_with(card, 'org/repo', config)
+                    mock_from_gh_project.assert_called_with(card, 'org/repo', 'org', config)
 
                 mock_from_gh_project.reset_mock()
 
@@ -657,12 +664,12 @@ class TestUpstreamIssue(unittest.TestCase):
             for cf in config_filters:
                 config['sync2jira']['filters']['github']['org/repo'] = { 'milestone': cf } if cf else {}
 
-                response = u.handle_gh_project_message(card, config)
+                response = u.handle_gh_project_message(card, 'org', config)
 
                 ms_num = milestone['number'] if milestone else None
                 if cf is None or str(ms_num) == str(cf):
                     self.assertEqual('Successful Call!', response)
-                    mock_from_gh_project.assert_called_with(card, 'org/repo', config)
+                    mock_from_gh_project.assert_called_with(card, 'org/repo', 'org', config)
                 else:
                     self.assertEqual(None, response)
 
@@ -679,15 +686,15 @@ class TestUpstreamIssue(unittest.TestCase):
         extra_card_fields = (
             {},
             {'tag': 'tag'},
-            {'IssueState': 'closed'},
+            {'state': 'closed'},
             {'tag': 'wrong-tag'},
-            {'IssueState': 'not-closed'},
-            {'tag': 'tag', 'IssueState': 'closed'},
-            {'tag': 'wrong-tag', 'IssueState': 'closed'},
-            {'tag': 'tag', 'IssueState': 'not-closed'},
-            {'tag': 'wrong-tag', 'IssueState': 'not-closed'}
+            {'state': 'not-closed'},
+            {'tag': 'tag', 'state': 'closed'},
+            {'tag': 'wrong-tag', 'state': 'closed'},
+            {'tag': 'tag', 'state': 'not-closed'},
+            {'tag': 'wrong-tag', 'state': 'not-closed'}
         )
-        config_filters = ({}, {'tag': 'tag'}, {'IssueState': 'closed'}, {'tag': 'tag', 'IssueState': 'closed'})
+        config_filters = ({}, {'tag': 'tag'}, {'state': 'closed'}, {'tag': 'tag', 'state': 'closed'})
 
         for extras in extra_card_fields:
             card = {'repository': {'nameWithOwner': 'org/repo'}, 'number': 17}
@@ -696,11 +703,11 @@ class TestUpstreamIssue(unittest.TestCase):
             for cf in config_filters:
                 config['sync2jira']['filters']['github']['org/repo'] = cf
 
-                response = u.handle_gh_project_message(card, config)
+                response = u.handle_gh_project_message(card, 'org', config)
 
                 if not cf or (extras and all(str(card.get(field)) == str(value) for field, value in cf.items())):
                     self.assertEqual('Successful Call!', response)
-                    mock_from_gh_project.assert_called_with(card, 'org/repo', config)
+                    mock_from_gh_project.assert_called_with(card, 'org/repo', 'org', config)
                 else:
                     self.assertEqual(None, response)
 

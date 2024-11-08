@@ -113,43 +113,47 @@ class Issue(object):
         )
 
     @classmethod
-    def from_gh_project(cls, issue, upstream, config):
+    def from_gh_project(cls, issue, upstream, org_name, config):
         """Helper function to create an intermediary object from a GitHub
         project V2 issue.
         """
+        source = 'github_projects'
         kwargs = {
-            'source': 'github',  # FIXME:  Should this be 'github_project' or equiv?
+            'source': source,  # TODO:  confirm that the downstream code can handle this not being 'github'
             'title': issue['title'],
             'url': issue['url'],
             'upstream': upstream,
+            'downstream': config['sync2jira']['map'][source][org_name],
             'config': config,
             'content': issue['body'] or '',  # FIXME:  Should this be HTML, MD, or text?
             'reporter': {'fullname': issue['author']['name']},
-            'status': issue.get('IssueState', '').strip().capitalize(),  # FIXME:  omit if blank?
+            'status': issue.get('state', '').strip().capitalize(),
             'id': issue['id'],
             'upstream_id': issue['number'],
-            'priority': None,  # TODO: Priority is broken
+            'priority': None,  # TODO:  We can get it from the project, but we need changes from the main branch.
             'comments': [{
                 'author': comment['author']['name'],
                 'name': comment['author']['login'],
                 'body': trim_string(comment['body']) if comment['body'] else '',
                 'id': comment['id'],
                 'date_created': comment['createdAt'],
-                'changed': comment['updatedAt']  # FIXME:  This was "None".
+                'changed': comment['updatedAt']  # TODO:  This was `None`, need to confirm that this is better.
             } for comment in issue['comments']['nodes']],
             'tags': [node['name'] for node in issue['labels']['nodes']],
-            'assignee': [node['name'] for node in issue['assignees']['nodes']],  # FIXME:  Is a list OK here & do we want login instead?
+            'assignee': [node['name'] for node in issue['assignees']['nodes']],
         }
 
-        for node in issue['projectItems']['nodes'][0]['fieldValues']['nodes']:
-            if node['field']['name'] == 'Story Points':
-                kwargs['storypoints'] = str(node['number'])  # FIXME:  should this be str or int?
+        proj_nodes = issue['projectItems']['nodes']
+        field_nodes = proj_nodes[0]['fieldValues']['nodes'] if proj_nodes else []
+        for node in field_nodes:
+            if node.get('field', {}).get('name', '') == 'Story Points':
+                kwargs['storypoints'] = str(node['number'])  # FIXME:  should this be an int?
                 break
         else:
             kwargs['storypoints'] = None
 
         # Perform any mapping
-        mapping = config['sync2jira']['map']['github'][upstream].get('mapping', [])
+        mapping = config['sync2jira']['map'][source][org_name].get('mapping', [])
 
         # Check for fixVersion
         if any('fixVersion' in item for item in mapping):
