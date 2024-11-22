@@ -23,6 +23,7 @@ Run with systemd, please.
 """
 # Python Standard Library Modules
 from copy import deepcopy
+from collections import defaultdict
 from datetime import datetime, timezone
 import logging
 import os
@@ -275,14 +276,17 @@ def initialize_github_project(timestamp, config):
             issue = u_issue.handle_gh_project_message(entry, org_name, config)
             d_issue.sync_with_jira(issue, config)
 
+    if config.get('sync2jira', {}).get('debug', False):
+        ghp_dump_stats()
+
 
 gql_query = '''
-    query ($ORGANIZATION: String!, $PROJECT_NUMBER: Int!, $CURSOR: String!) {
+    query ($ORGANIZATION: String!, $PROJECT_NUMBER: Int!, $MAX_ITEMS: Int!, $CURSOR: String!) {
         organization(login: $ORGANIZATION) {
             projectV2(number: $PROJECT_NUMBER) {
                 updatedAt
                 title
-                items(first: 100, after: $CURSOR) {
+                items(first: $MAX_ITEMS, after: $CURSOR) {
                     totalCount
                     nodes {
                         content {
@@ -481,14 +485,28 @@ gql_query = '''
         }
     }'''
 
+# Gather statistics which can be used to tune the GitHub query to lower the
+# overall cost points:
+#  - high-water-marking for each `totalCount` value which is not paged
+#  - for items which are paged (e.g., projectV2.items) high-water mark for
+#    queries which do not hit the max
+# Lowering the maximums make the query cheaper, but, for non-paged connections,
+# risk missing data; for connections which include connections, the cost saving
+# of lowering the maximum for the outer connection is multiplied by the costs
+# of the inner connections, so, for paged connections, issuing extra queries
+# with a lower maximum may cost fewer points overall (although it costs more in
+# run time).
+ghp_statistics: defaultdict = defaultdict(int)
+
+# Maximum number of project items to request in each (paged) query:  100 is the
+# maximum; lower creates smaller, cheaper queries but may require more of them.
+projectV2_items_max = 100
+
 
 def query_ghp(organization, project_number, timestamp, gh_token):
     """A generator which yields the `content` of each node in a GitHub project V2 item list"""
     has_next_page = True
     cursor = ""
-    # TODO:
-    #  - Add high-water-marking for `totalCount` values;
-    #  - Add average items per query (seeking a lower projectV2.items max to lower overall cost points)
     queries = 0
     server_side_skipped = 0
     no_new_updates = 0
@@ -502,8 +520,8 @@ def query_ghp(organization, project_number, timestamp, gh_token):
                 'variables': {
                     'ORGANIZATION': organization,
                     'PROJECT_NUMBER': project_number,
+                    'MAX_ITEMS': projectV2_items_max,
                     'CURSOR': cursor,
-                    # TODO: Add variable for projectV2.items.first value
                 },
             },
             headers={'Authorization': 'Bearer ' + gh_token},
@@ -539,6 +557,10 @@ def query_ghp(organization, project_number, timestamp, gh_token):
             response.headers['X-Ratelimit-Remaining'],
             datetime.fromtimestamp(int(response.headers['X-RateLimit-Reset']),
                                    timezone.utc))
+        if len(items['nodes']) < projectV2_items_max:
+            ghp_statistics['projectV2_items'] = max(
+                len(items['nodes']), ghp_statistics['projectV2_items'])
+
         for item in items['nodes']:
             content = item['content']
             if not content:
@@ -600,23 +622,55 @@ def verify_content_lists(content):
     to increase the request limit (which makes the query expensive) or add
     pagination (which also subjects us to the rate limit cap).
 
+    We track the high-water mark for each connection.
+
     :param Dict content: the Issue content
     :return: Nothing
     """
-    assert content['assignees']['totalCount'] == len(content['assignees']['nodes'])
-    assert content['comments']['totalCount'] == len(content['comments']['nodes'])
-    assert content['projectItems']['totalCount'] == len(content['projectItems']['nodes'])
-    for fields in (pi['fieldValues'] for pi in content['projectItems']['nodes']):
-        assert fields['totalCount'] == len(fields['nodes'])
-        if 'users' in fields:
-            usr = fields['users']
-            assert usr['totalCount'] == len(usr['nodes'])
-    assert content['labels']['totalCount'] == len(content['labels']['nodes'])
-    cpr = content['closedByPullRequestsReferences']
-    assert cpr['totalCount'] == len(cpr['nodes'])
-    for prs in cpr['nodes']:
-        assert prs['assignees']['totalCount'] == len(prs['assignees']['nodes'])
-        assert prs['projectCards']['totalCount'] == len(prs['projectCards']['nodes'])
+    connections = {
+        'assignees': None,
+        'comments': None,
+        'labels': None,
+        'closedByPullRequestsReferences': {
+            'assignees': None,
+            'projectCards': None,
+        },
+        'projectItems': {
+            'fieldValues': {
+                # Omit the 'users' field from the checks and metrics:  we set
+                # the max for this to 1 in order to capture a representative
+                # value; however, since this is a deeply-nested connection,
+                # increasing this value gets very expensive very fast; and, we
+                # don't actually use it for anything, currently (Jira accepts
+                # only a single assignee, for instance, but we could try to
+                # record the others as "contributors").
+                # 'users': None,
+            },
+        },
+    }
+
+    def doit(data, keys, prefix):
+        for c, d in keys.items():
+            stat = prefix + '.' + c
+            if c not in data:
+                continue
+            assert data[c]['totalCount'] == len(data[c]['nodes']), \
+                f"Received only {len(data[c]['nodes'])} of {data[c]['totalCount']} items for connection {stat}"
+            ghp_statistics[stat] = max(data[c]['totalCount'], ghp_statistics[stat])
+            if d:
+                for node in data[c]['nodes']:
+                    doit(node, d, stat)
+
+    doit(content, connections, "content")
+
+
+def ghp_dump_stats():
+    """Log the GitHub project-based query statistics"""
+    msg = "GitHub project-based query statistics:\n"
+    msg += "\tConnection high-water marks:\n"
+    for k, v in ghp_statistics.items():
+        msg += f"\t\t{k}: {v}\n"
+    log.debug(msg)
 
 
 def sanity_check_dates(content):
