@@ -312,7 +312,7 @@ class TestMain(unittest.TestCase):
     def test_initialize_github_project(self, mock_d, mock_u, mock_query_ghp):
         config = deepcopy(self.mock_config)
         config['sync2jira']['github_token'] = 'mock_token'
-        timestamp = "2024-10-07T15:40:00Z"
+        timestamp = m.get_timestamp("2024-10-07T15:40:00Z")
         issues = [
             {
                 'repository': {'nameWithOwner': "mock_repo1"},
@@ -573,7 +573,7 @@ class TestMain(unittest.TestCase):
         organization = "mock_organization"
         project_number = 17
         token = 'mock_token'
-        timestamp = "2024-10-07T15:40:00Z"
+        timestamp = m.get_timestamp("2024-10-07T15:40:00Z")
         cursors = ("", "MTAw", "MqAw", "MzAw", "Mzcw")
         pages = (
             {
@@ -838,7 +838,7 @@ class TestMain(unittest.TestCase):
         expected = [
             n['content']
             for p in pages for n in p['data']['organization']['projectV2']['items']['nodes']
-            if n['content'] and n['content']['updatedAt'] >= timestamp]
+            if n['content'] and m.get_timestamp(n['content']['updatedAt']) >= timestamp]
         self.assertEqual(results, expected)
         for result in results:
             project_items = result['projectItems']['nodes']

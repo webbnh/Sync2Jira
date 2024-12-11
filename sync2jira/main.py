@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 import logging
 import os
 import requests
+import sys
 from time import sleep
 import traceback
 import warnings
@@ -89,6 +90,27 @@ DATAGREPPER_URL = "http://apps.fedoraproject.org/datagrepper/raw"
 INITIALIZE = os.getenv('INITIALIZE', '0')
 GITHUB_API = 'https://api.github.com/graphql'
 GHP_LAST_UPDATE = os.getenv('SYNC2JIRA_LAST_UPDATE', '')
+
+
+def get_timestamp(time_str: str) -> datetime:
+    """Wrapper for datetime.fromisoformat()
+
+    If the specified time string ends in `Z` (as a timezone specifier for UTC)
+    and we're running with a version of Python prior to 3.11, whose
+    fromisoformat() does not accept a trailing `Z`, this function
+    replaces the suffix with the equivalent `+00:00`.  It then returns the
+    result from fromisoformat(), after setting the timezone to UTC if none was
+    provided in the input.
+
+    Returns a timezone-aware datetime object.
+    """
+    if time_str.endswith('Z') and sys.version_info < (3, 11):
+        time_str = time_str[:-1] + '+00:00'
+    timestamp = datetime.fromisoformat(time_str)
+    if timestamp.tzinfo is None:
+        # There is no time zone information; set it to UTC.
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return timestamp
 
 
 def load_config(loader=fedmsg.config.load_config):
@@ -259,7 +281,7 @@ def initialize_github_project(timestamp, config):
     """
     Pull changes since the last update directly from a GitHub Project
 
-    :param str timestamp: last update time in YYYY-MM-DDTHH:MM:SSZ format
+    :param datetime timestamp: last update time, timezone aware
     :param Dict config: Config dict
     :return: Nothing
     """
@@ -503,7 +525,7 @@ ghp_statistics: defaultdict = defaultdict(int)
 projectV2_items_max = 100
 
 
-def query_ghp(organization, project_number, timestamp, gh_token):
+def query_ghp(organization, project_number, timestamp: datetime, gh_token):
     """A generator which yields the `content` of each node in a GitHub project V2 item list"""
     has_next_page = True
     cursor = ""
@@ -596,8 +618,8 @@ def query_ghp(organization, project_number, timestamp, gh_token):
             # Skip items which we've already done in a previous run; we have to
             # check both the issue itself and the information maintained about
             # it in the project, if there is an associated project.
-            if ((not proj_items or proj_items[0]['updatedAt'] < timestamp)
-                    and content['updatedAt'] < timestamp):
+            if ((not proj_items or get_timestamp(proj_items[0]['updatedAt']) < timestamp)
+                    and get_timestamp(content['updatedAt']) < timestamp):
                 sanity_check_dates(content)
                 no_new_updates += 1
                 continue
@@ -826,9 +848,12 @@ def main(runtime_test=False, runtime_config=None):
             if runtime_test:
                 return
         elif GHP_LAST_UPDATE:
-            # Pull directly from a GitHub Project
-            log.info("Initialization False. Pulling data since %s from GitHub Projects...", GHP_LAST_UPDATE)
-            initialize_github_project(GHP_LAST_UPDATE, config)
+            # Pull changes since the last update directly from a GitHub Project
+            timestamp = get_timestamp(GHP_LAST_UPDATE)
+            log.info(
+                "Initialization False. Pulling data since %s from GitHub Projects...",
+                timestamp)
+            initialize_github_project(timestamp, config)
         else:
             # Pull from datagrepper for the last 10 minutes
             log.info("Initialization False. Pulling data from datagrepper...")
